@@ -30,9 +30,6 @@ DallasTemperature sensors(&oneWire);
 const char *ssid = "SSID";
 const char *password = "PASSWD";
 
-String getStatusURL = "https://plantio-74e808a068fc.herokuapp.com/led/status/";
-String setToggleURL = "https://plantio-74e808a068fc.herokuapp.com/led/toggle/";
-String postSensorsURL = "https://plantio-74e808a068fc.herokuapp.com/sensors/";
 String postUpdateURL = "https://plantio-74e808a068fc.herokuapp.com/update/";
 
 int btnGPIO = 0;
@@ -106,9 +103,9 @@ void setup() {
         break;
     }
     delay(tryDelay);
-
     if (numberOfTries <= 0) {
       Serial.print("[WiFi] Failed to connect to WiFi!");
+      digitalWrite(LED_PIN, LOW);
       // Use disconnect function to force stop trying to connect
       WiFi.disconnect();
       return;
@@ -121,8 +118,8 @@ void setup() {
 void loop() {
   // Read the button state
   btnState = digitalRead(btnGPIO);
-
-  if (WiFi.status()== WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED) {
+    digitalWrite(LED_PIN, HIGH);
     HTTPClient http;
     JsonDocument json;
     Serial.println("Lendo DHT22...");
@@ -146,101 +143,91 @@ void loop() {
       Serial.print(tmpS);
       Serial.println("°C");
     }
-    if (tmpS > 32.00 || tmpS < 17.00) {
+    http.begin(postUpdateURL.c_str());
+    http.addHeader("Content-Type", "application/json");
+    JsonDocument data;
+    data["mac"] = WiFi.macAddress();
+    JsonArray sensors = data.createNestedArray("sensors");
+    JsonObject obj_tmpA = sensors.createNestedObject();
+    obj_tmpA["type"] = "tmpA";
+    obj_tmpA["value"] = tmpA;
+    JsonObject obj_umdA = sensors.createNestedObject();
+    obj_umdA["type"] = "umdA";
+    obj_umdA["value"] = umdA;
+    JsonObject obj_tmpS = sensors.createNestedObject();
+    obj_tmpS["type"] = "tmpS";
+    obj_tmpS["value"] = tmpS;
+    String jsonString;
+    serializeJson(data, jsonString);
+    Serial.println(jsonString);
+    Serial.print("[WiFi] POST data... ");
+    int httpResponseCode = http.POST(jsonString);
+    if (httpResponseCode == 200) {
+      Serial.println("OK");
+      digitalWrite(LED_PIN, LOW);
+      delay(100);
+      digitalWrite(LED_PIN, HIGH);
+      delay(100);
+      digitalWrite(LED_PIN, LOW);
+      delay(100);
+      digitalWrite(LED_PIN, HIGH);
+      String payload = http.getString();
+      Serial.println(payload);
+      deserializeJson(json, payload);
+      bool light = json["light"];
+      if (light == true) {
+        Serial.println("Light: Ligado");
+        digitalWrite(RELAY1_PIN, LOW);
+      } else {
+        digitalWrite(RELAY1_PIN, HIGH);
+      }
+      bool pump = json["pump"];
+      if (pump == true) {
+        Serial.println("Pump: Ligado");
+        digitalWrite(RELAY2_PIN, LOW);
+      } else {
+        digitalWrite(RELAY2_PIN, HIGH);
+      }
+    } else {
+      Serial.println("Error");
+    }
+    http.end();
+    float tmpS_max = json["tmpS_max"];
+    float tmpS_min = json["tmpS_min"];
+    if (tmpS > tmpS_max || tmpS < tmpS_min) {
       Serial.println("Temperatura fora da faixa ideal!");
       tone(BUZZER_PIN, 1000);
-      delay(500);
+      delay(100);
+      noTone(BUZZER_PIN);
+      delay(100);
+      tone(BUZZER_PIN, 1000);
+      delay(100);
       noTone(BUZZER_PIN);
     }
-    if (btnState == LOW) {
-      //// Disconnect from WiFi
-      //Serial.println("[WiFi] Disconnecting from WiFi!");
-      //// This function will disconnect and turn off the WiFi (NVS WiFi data is kept)
-      //if (WiFi.disconnect(true, false)) {
-      //  Serial.println("[WiFi] Disconnected from WiFi!");
-      //}
-      Serial.print("[WiFi] LED toogle: ");
-      http.begin(setToggleURL.c_str());
-      int httpResponseCode = http.GET();
-      if (httpResponseCode == 200) {
-        Serial.println("OK");
-      } else {
-        Serial.print("Error code: ");
-        Serial.println(httpResponseCode);
-      }
-      http.end();
-      delay(5000);
-    } else {
-      Serial.print("[WiFi] LED status: ");
-      http.begin(getStatusURL.c_str());
-      int httpResponseCode = http.GET();
-      if (httpResponseCode == 200) {
-        // Serial.print("HTTP Response code: ");
-        // Serial.println(httpResponseCode);
-        String payload = http.getString();
-        // Serial.println(payload);
-        
-        deserializeJson(json, payload);
-        bool status = json["status"];
-        Serial.println(status);
-        if (status == true) {
-          digitalWrite(LED_PIN, HIGH);
-          digitalWrite(RELAY1_PIN, LOW);
-          digitalWrite(RELAY2_PIN, LOW);
-        } else {
-          digitalWrite(LED_PIN, LOW);
-          digitalWrite(RELAY1_PIN, HIGH);
-          digitalWrite(RELAY2_PIN, HIGH);
-        }
-      }
-      else {
-        Serial.print("Error code: ");
-        Serial.println(httpResponseCode);
-      }
-      http.end();
-      http.begin(postUpdateURL.c_str());
-      http.addHeader("Content-Type", "application/json");
-      JsonDocument data;
-      data["mac"] = WiFi.macAddress();
-      JsonArray sensors = data.createNestedArray("sensors");
-      JsonObject obj_tmpA = sensors.createNestedObject();
-      obj_tmpA["type"] = "tmpA";
-      obj_tmpA["value"] = tmpA;
-      JsonObject obj_umdA = sensors.createNestedObject();
-      obj_umdA["type"] = "umdA";
-      obj_umdA["value"] = umdA;
-      JsonObject obj_tmpS = sensors.createNestedObject();
-      obj_tmpS["type"] = "tmpS";
-      obj_tmpS["value"] = tmpS;
-      String jsonString;
-      serializeJson(data, jsonString);
-      Serial.println(jsonString);
-      Serial.print("[WiFi] POST data... ");
-      httpResponseCode = http.POST(jsonString);
-      if (httpResponseCode == 200) {
-        Serial.println("OK");
-        String payload = http.getString();
-        // Serial.println(payload);
-        deserializeJson(json, payload);
-        bool light = json["light"];
-        if (light == false) {
-          digitalWrite(RELAY1_PIN, HIGH);
-        } else {
-          Serial.println("Light: Ligado");
-          digitalWrite(RELAY1_PIN, LOW);
-        }
-        bool pump = json["pump"];
-        if (pump == false) {
-          digitalWrite(RELAY2_PIN, HIGH);
-        } else {
-          Serial.println("Pump: Ligado");
-          digitalWrite(RELAY2_PIN, LOW);
-        }
-      } else {
-        Serial.println("Error");
-      }
-      http.end();
-      delay(5000);
+    float tmpA_max = json["tmpA_max"];
+    float tmpA_min = json["tmpA_min"];
+    if (tmpA > tmpA_max || tmpA < tmpA_min) {
+      Serial.println("Temperatura ambiente fora da faixa ideal!");
+      tone(BUZZER_PIN, 1000);
+      delay(100);
+      noTone(BUZZER_PIN);
+      delay(100);
+      tone(BUZZER_PIN, 1000);
+      delay(100);
+      noTone(BUZZER_PIN);
     }
+    float umdA_max = json["umdA_max"];
+    float umdA_min = json["umdA_min"];
+    if (umdA > umdA_max || umdA < umdA_min) {
+      Serial.println("Umidade fora da faixa ideal!");
+      tone(BUZZER_PIN, 1000);
+      delay(100);
+      noTone(BUZZER_PIN);
+      delay(100);
+      tone(BUZZER_PIN, 1000);
+      delay(100);
+      noTone(BUZZER_PIN);
+    }
+    delay(4500);
   }
 }
