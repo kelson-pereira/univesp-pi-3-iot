@@ -14,10 +14,14 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-#define DHT_PIN 25
+#ifdef ESP32
+  #include "esp32-hal-ledc.h"
+#endif
+
+#define DHT_PIN 14
 #define DHT_TYPE DHT22
-#define BUZZER_PIN 32
-#define ONEWIRE_PIN 33
+#define ONEWIRE_PIN 26
+#define BUZZER_PIN 25
 
 DHT dht(DHT_PIN, DHT_TYPE);
 OneWire oneWire(ONEWIRE_PIN);
@@ -26,14 +30,16 @@ DallasTemperature sensors(&oneWire);
 const char *ssid = "SSID";
 const char *password = "PASSWD";
 
-String ledStatusURL = "https://plantio-74e808a068fc.herokuapp.com/led/status/";
-String ledToggleURL = "https://plantio-74e808a068fc.herokuapp.com/led/toggle/";
+String getStatusURL = "https://plantio-74e808a068fc.herokuapp.com/led/status/";
+String setToggleURL = "https://plantio-74e808a068fc.herokuapp.com/led/toggle/";
+String postSensorsURL = "https://plantio-74e808a068fc.herokuapp.com/sensors/";
+String postUpdateURL = "https://plantio-74e808a068fc.herokuapp.com/update/";
 
 int btnGPIO = 0;
 int btnState = false;
 int LED_PIN = 2;
-int RELAY1_PIN = 26;
-int RELAY2_PIN = 27;
+int RELAY1_PIN = 32;
+int RELAY2_PIN = 33;
 
 void setup() {
   Serial.begin(115200);
@@ -140,10 +146,10 @@ void loop() {
       Serial.print(tmpS);
       Serial.println("°C");
     }
-    if (tmpS > 32.00) {
+    if (tmpS > 32.00 || tmpS < 17.00) {
+      Serial.println("Temperatura fora da faixa ideal!");
       tone(BUZZER_PIN, 1000);
-      Serial.println("Temperatura muito elevada!!!");
-      delay(1000);
+      delay(500);
       noTone(BUZZER_PIN);
     }
     if (btnState == LOW) {
@@ -154,7 +160,7 @@ void loop() {
       //  Serial.println("[WiFi] Disconnected from WiFi!");
       //}
       Serial.print("[WiFi] LED toogle: ");
-      http.begin(ledToggleURL.c_str());
+      http.begin(setToggleURL.c_str());
       int httpResponseCode = http.GET();
       if (httpResponseCode == 200) {
         Serial.println("OK");
@@ -166,13 +172,14 @@ void loop() {
       delay(5000);
     } else {
       Serial.print("[WiFi] LED status: ");
-      http.begin(ledStatusURL.c_str());
+      http.begin(getStatusURL.c_str());
       int httpResponseCode = http.GET();
       if (httpResponseCode == 200) {
         // Serial.print("HTTP Response code: ");
         // Serial.println(httpResponseCode);
         String payload = http.getString();
         // Serial.println(payload);
+        
         deserializeJson(json, payload);
         bool status = json["status"];
         Serial.println(status);
@@ -189,6 +196,48 @@ void loop() {
       else {
         Serial.print("Error code: ");
         Serial.println(httpResponseCode);
+      }
+      http.end();
+      http.begin(postUpdateURL.c_str());
+      http.addHeader("Content-Type", "application/json");
+      JsonDocument data;
+      data["mac"] = WiFi.macAddress();
+      JsonArray sensors = data.createNestedArray("sensors");
+      JsonObject obj_tmpA = sensors.createNestedObject();
+      obj_tmpA["type"] = "tmpA";
+      obj_tmpA["value"] = tmpA;
+      JsonObject obj_umdA = sensors.createNestedObject();
+      obj_umdA["type"] = "umdA";
+      obj_umdA["value"] = umdA;
+      JsonObject obj_tmpS = sensors.createNestedObject();
+      obj_tmpS["type"] = "tmpS";
+      obj_tmpS["value"] = tmpS;
+      String jsonString;
+      serializeJson(data, jsonString);
+      Serial.println(jsonString);
+      Serial.print("[WiFi] POST data... ");
+      httpResponseCode = http.POST(jsonString);
+      if (httpResponseCode == 200) {
+        Serial.println("OK");
+        String payload = http.getString();
+        // Serial.println(payload);
+        deserializeJson(json, payload);
+        bool light = json["light"];
+        if (light == false) {
+          digitalWrite(RELAY1_PIN, HIGH);
+        } else {
+          Serial.println("Light: Ligado");
+          digitalWrite(RELAY1_PIN, LOW);
+        }
+        bool pump = json["pump"];
+        if (pump == false) {
+          digitalWrite(RELAY2_PIN, HIGH);
+        } else {
+          Serial.println("Pump: Ligado");
+          digitalWrite(RELAY2_PIN, LOW);
+        }
+      } else {
+        Serial.println("Error");
       }
       http.end();
       delay(5000);
