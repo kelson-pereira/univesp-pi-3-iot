@@ -1,12 +1,3 @@
-/* Wi-Fi STA Connect and Disconnect Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-
-*/
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -14,220 +5,173 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-#ifdef ESP32
-  #include "esp32-hal-ledc.h"
-#endif
+// Configurações de Hardware
+#define DHT_PIN          14
+#define DHT_TYPE         DHT22
+#define ONEWIRE_PIN      26
+#define BUZZER_PIN       25
+#define LED_PIN          2
+#define RELAY1_PIN       32
+#define RELAY2_PIN       33
 
-#define DHT_PIN 14
-#define DHT_TYPE DHT22
-#define ONEWIRE_PIN 26
-#define BUZZER_PIN 25
+// Constantes
+bool KEEP_ON = true;
+bool KEEP_OFF = false;
 
+// Configurações de Rede
+const char* WIFI_SSID     = "SSID";
+const char* WIFI_PASSWORD = "PASSWD";
+const String API_URL      = "https://plantio-74e808a068fc.herokuapp.com/update/";
+
+// Intervalos
+const unsigned long SENSOR_READ_INTERVAL = 5000; // 5 segundos
+const unsigned long LED_BLINK_INTERVAL = 100;
+const unsigned long BUZZER_BEEP_DURATION = 100;
+
+// Objetos globais
 DHT dht(DHT_PIN, DHT_TYPE);
 OneWire oneWire(ONEWIRE_PIN);
-DallasTemperature sensors(&oneWire);
+DallasTemperature tempSensors(&oneWire);
+WiFiClient wifiClient;
 
-const char *ssid = "SSID";
-const char *password = "PASSWD";
-
-String postUpdateURL = "https://plantio-74e808a068fc.herokuapp.com/update/";
-
-int btnGPIO = 0;
-int btnState = false;
-int LED_PIN = 2;
-int RELAY1_PIN = 32;
-int RELAY2_PIN = 33;
-
-void setup() {
+void setupHardware() {
   Serial.begin(115200);
-  delay(10);
   
-  digitalWrite(RELAY1_PIN, HIGH);
-  digitalWrite(RELAY2_PIN, HIGH);
-
-  // Set GPIO0 Boot button as input
-  pinMode(btnGPIO, INPUT);
-
-  // Set LED as output
   pinMode(LED_PIN, OUTPUT);
-
-  // Set BUZZER as output
   pinMode(BUZZER_PIN, OUTPUT);
-
-  // Set RELAY as output
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
-
-  // Init DHT22 sensor
+  
+  digitalWrite(RELAY1_PIN, HIGH); // Inicia com relé desligado
+  digitalWrite(RELAY2_PIN, HIGH);
+  
   dht.begin();
+  tempSensors.begin();
+}
 
-  // Init DS18B20 sensor
-  sensors.begin();
-
-  // We start by connecting to a WiFi network
-  // To debug, please enable Core Debug Level to Verbose
-
-  Serial.println();
-  Serial.print("[WiFi] Connecting to ");
-  Serial.println(ssid);
-
-  WiFi.begin(ssid, password);
-  // Auto reconnect is set true as default
-  // To set auto connect off, use the following function
-  //    WiFi.setAutoReconnect(false);
-
-  // Will try for about 10 seconds (20x 500ms)
-  int tryDelay = 500;
-  int numberOfTries = 20;
-
-  // Wait for the WiFi event
-  while (true) {
-    switch (WiFi.status()) {
-      case WL_NO_SSID_AVAIL: Serial.println("[WiFi] SSID not found"); break;
-      case WL_CONNECT_FAILED:
-        Serial.print("[WiFi] Failed - WiFi not connected! Reason: ");
-        return;
-        break;
-      case WL_CONNECTION_LOST: Serial.println("[WiFi] Connection was lost"); break;
-      case WL_SCAN_COMPLETED:  Serial.println("[WiFi] Scan is completed"); break;
-      case WL_DISCONNECTED:    Serial.println("[WiFi] WiFi is disconnected"); break;
-      case WL_CONNECTED:
-        Serial.println("[WiFi] WiFi is connected!");
-        Serial.print("[WiFi] IP address: ");
-        Serial.println(WiFi.localIP());
-        return;
-        break;
-      default:
-        Serial.print("[WiFi] WiFi Status: ");
-        Serial.println(WiFi.status());
-        break;
+bool connectToWiFi() {
+  Serial.print("\nConectando ao WiFi.");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  
+  for (int i = 0; i < 20; i++) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println(" Conectado!");
+      Serial.printf("IP: %s MAC: %s\n", WiFi.localIP().toString().c_str(), WiFi.macAddress().c_str());
+      blinkLED(1, KEEP_ON);
+      beepBuzzer(2, 1000);
+      return true;
     }
-    delay(tryDelay);
-    if (numberOfTries <= 0) {
-      Serial.print("[WiFi] Failed to connect to WiFi!");
-      digitalWrite(LED_PIN, LOW);
-      // Use disconnect function to force stop trying to connect
-      WiFi.disconnect();
-      return;
-    } else {
-      numberOfTries--;
-    }
+    delay(500);
+    Serial.print(".");
+    blinkLED(1, KEEP_OFF);
+  }
+  
+  Serial.println("\nFalha na conexão WiFi!");
+  beepBuzzer(1, 500);
+  
+  return false;
+}
+
+void readSensors(float& temperature, float& humidity, float& solutionTemp) {
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
+  tempSensors.requestTemperatures();
+  solutionTemp = tempSensors.getTempCByIndex(0);
+  
+  Serial.printf("Temperatura: %.1f°C, Umidade: %.1f%%, Solução: %.1f°C\n", 
+                temperature, humidity, solutionTemp);
+}
+
+void sendDataToServer(float temperature, float humidity, float solutionTemp) {
+  HTTPClient http;
+  http.begin(API_URL.c_str());
+  http.addHeader("Content-Type", "application/json");
+
+  JsonDocument doc;
+  doc["mac"] = WiFi.macAddress();
+  
+  JsonArray sensors = doc.createNestedArray("sensors");
+  if (!isnan(temperature)) {
+    addSensorData(sensors, "tmpA", temperature);
+  }
+  if (!isnan(humidity)) {
+    addSensorData(sensors, "umdA", humidity);
+  }
+  if (solutionTemp != DEVICE_DISCONNECTED_C) {
+    addSensorData(sensors, "tmpS", solutionTemp);
+  }
+
+  String json;
+  serializeJson(doc, json);
+  
+  int httpCode = http.POST(json);
+  if (httpCode == HTTP_CODE_OK) {
+    handleServerResponse(http.getString());
+    blinkLED(3, KEEP_ON); // Feedback visual
+  } else {
+    Serial.println("Erro na requisição HTTP");
+  }
+  
+  http.end();
+}
+
+void addSensorData(JsonArray& array, const char* type, float value) {
+  JsonObject sensor = array.createNestedObject();
+  sensor["type"] = type;
+  sensor["value"] = value;
+}
+
+void handleServerResponse(const String& response) {
+  JsonDocument doc;
+  deserializeJson(doc, response);
+  
+  // Controle de relés
+  digitalWrite(RELAY1_PIN, doc["light"] ? LOW : HIGH);
+  digitalWrite(RELAY2_PIN, doc["pump"] ? LOW : HIGH);
+  
+  // Verificação de limites
+  checkLimits(doc["tmpA"], doc["tmpA_min"], doc["tmpA_max"], "Temperatura ambiente");
+  checkLimits(doc["umdA"], doc["umdA_min"], doc["umdA_max"], "Umidade");
+  checkLimits(doc["tmpS"], doc["tmpS_min"], doc["tmpS_max"], "Temperatura da solução");
+}
+
+void checkLimits(float value, float min, float max, const char* sensorName) {
+  if (value < min || value > max) {
+    Serial.printf("%s fora da faixa ideal!\n", sensorName);
+    beepBuzzer(3, 1000);
   }
 }
 
+void beepBuzzer(int times, int frequency) {
+  for (int i = 0; i < times; i++) {
+    tone(BUZZER_PIN, frequency, BUZZER_BEEP_DURATION);
+    delay(BUZZER_BEEP_DURATION);
+    noTone(BUZZER_PIN);
+    delay(BUZZER_BEEP_DURATION);
+  }
+}
+
+void blinkLED(int times, bool keepOn) {
+  for (int i = 0; i < times; i++) {
+    digitalWrite(LED_PIN, keepOn ? LOW : HIGH);
+    delay(LED_BLINK_INTERVAL);
+    digitalWrite(LED_PIN, keepOn ? HIGH : LOW);
+    delay(LED_BLINK_INTERVAL);
+  }
+}
+
+void setup() {
+  setupHardware();
+  connectToWiFi();
+}
+
 void loop() {
-  // Read the button state
-  btnState = digitalRead(btnGPIO);
-  if (WiFi.status() == WL_CONNECTED) {
-    digitalWrite(LED_PIN, HIGH);
-    HTTPClient http;
-    JsonDocument json;
-    Serial.println("Lendo DHT22...");
-    float tmpA = dht.readTemperature();
-    float umdA = dht.readHumidity();
-    if (!isnan(tmpA)) {
-      Serial.print("Temperatura: ");
-      Serial.print(tmpA);
-      Serial.println("°C");
-    }
-    if (!isnan(umdA)) {
-      Serial.print("Umidade: ");
-      Serial.print(umdA);
-      Serial.println("%");
-    }
-    Serial.println("Lendo DS18B20...");
-    sensors.requestTemperatures();
-    float tmpS = sensors.getTempCByIndex(0);
-    if (!isnan(tmpS)){
-      Serial.print("Temperatura da solucao: ");
-      Serial.print(tmpS);
-      Serial.println("°C");
-    }
-    http.begin(postUpdateURL.c_str());
-    http.addHeader("Content-Type", "application/json");
-    JsonDocument data;
-    data["mac"] = WiFi.macAddress();
-    JsonArray sensors = data.createNestedArray("sensors");
-    JsonObject obj_tmpA = sensors.createNestedObject();
-    obj_tmpA["type"] = "tmpA";
-    obj_tmpA["value"] = tmpA;
-    JsonObject obj_umdA = sensors.createNestedObject();
-    obj_umdA["type"] = "umdA";
-    obj_umdA["value"] = umdA;
-    JsonObject obj_tmpS = sensors.createNestedObject();
-    obj_tmpS["type"] = "tmpS";
-    obj_tmpS["value"] = tmpS;
-    String jsonString;
-    serializeJson(data, jsonString);
-    Serial.println(jsonString);
-    Serial.print("[WiFi] POST data... ");
-    int httpResponseCode = http.POST(jsonString);
-    if (httpResponseCode == 200) {
-      Serial.println("OK");
-      digitalWrite(LED_PIN, LOW);
-      delay(100);
-      digitalWrite(LED_PIN, HIGH);
-      delay(100);
-      digitalWrite(LED_PIN, LOW);
-      delay(100);
-      digitalWrite(LED_PIN, HIGH);
-      String payload = http.getString();
-      Serial.println(payload);
-      deserializeJson(json, payload);
-      bool light = json["light"];
-      if (light == true) {
-        Serial.println("Light: Ligado");
-        digitalWrite(RELAY1_PIN, LOW);
-      } else {
-        digitalWrite(RELAY1_PIN, HIGH);
-      }
-      bool pump = json["pump"];
-      if (pump == true) {
-        Serial.println("Pump: Ligado");
-        digitalWrite(RELAY2_PIN, LOW);
-      } else {
-        digitalWrite(RELAY2_PIN, HIGH);
-      }
-    } else {
-      Serial.println("Error");
-    }
-    http.end();
-    float tmpS_max = json["tmpS_max"];
-    float tmpS_min = json["tmpS_min"];
-    if (tmpS > tmpS_max || tmpS < tmpS_min) {
-      Serial.println("Temperatura fora da faixa ideal!");
-      tone(BUZZER_PIN, 1000);
-      delay(100);
-      noTone(BUZZER_PIN);
-      delay(100);
-      tone(BUZZER_PIN, 1000);
-      delay(100);
-      noTone(BUZZER_PIN);
-    }
-    float tmpA_max = json["tmpA_max"];
-    float tmpA_min = json["tmpA_min"];
-    if (tmpA > tmpA_max || tmpA < tmpA_min) {
-      Serial.println("Temperatura ambiente fora da faixa ideal!");
-      tone(BUZZER_PIN, 1000);
-      delay(100);
-      noTone(BUZZER_PIN);
-      delay(100);
-      tone(BUZZER_PIN, 1000);
-      delay(100);
-      noTone(BUZZER_PIN);
-    }
-    float umdA_max = json["umdA_max"];
-    float umdA_min = json["umdA_min"];
-    if (umdA > umdA_max || umdA < umdA_min) {
-      Serial.println("Umidade fora da faixa ideal!");
-      tone(BUZZER_PIN, 1000);
-      delay(100);
-      noTone(BUZZER_PIN);
-      delay(100);
-      tone(BUZZER_PIN, 1000);
-      delay(100);
-      noTone(BUZZER_PIN);
-    }
-    delay(4500);
+  static unsigned long lastReadTime = 0;
+  
+  if (millis() - lastReadTime >= SENSOR_READ_INTERVAL && WiFi.status() == WL_CONNECTED) {
+    float temperature, humidity, solutionTemp;
+    readSensors(temperature, humidity, solutionTemp);
+    sendDataToServer(temperature, humidity, solutionTemp);
+    lastReadTime = millis();
   }
 }
