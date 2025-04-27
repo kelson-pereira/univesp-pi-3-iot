@@ -9,6 +9,7 @@
 #define DHT_PIN          14
 #define DHT_TYPE         DHT22
 #define ONEWIRE_PIN      26
+#define LEVEL_PIN        27
 #define BUZZER_PIN       25
 #define LED_PIN          2
 #define RELAY1_PIN       32
@@ -25,8 +26,8 @@ const String API_URL      = "https://plantio-74e808a068fc.herokuapp.com/update/"
 
 // Intervalos
 const unsigned long SENSOR_READ_INTERVAL = 5000; // 5 segundos
-const unsigned long LED_BLINK_INTERVAL = 100;
 const unsigned long BUZZER_BEEP_DURATION = 100;
+const unsigned long LED_BLINK_INTERVAL = 100;
 
 // Objetos globais
 DHT dht(DHT_PIN, DHT_TYPE);
@@ -41,6 +42,7 @@ void setupHardware() {
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
+  pinMode(LEVEL_PIN, INPUT);
   
   digitalWrite(RELAY1_PIN, HIGH); // Inicia com relé desligado
   digitalWrite(RELAY2_PIN, HIGH);
@@ -51,9 +53,11 @@ void setupHardware() {
 
 bool connectToWiFi() {
   Serial.print("\nConectando ao WiFi.");
+  WiFi.disconnect(true);
+  delay(100);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   
-  for (int i = 0; i < 20; i++) {
+  for (int i = 0; i < 10; i++) {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println(" Conectado!");
       Serial.printf("IP: %s MAC: %s\n", WiFi.localIP().toString().c_str(), WiFi.macAddress().c_str());
@@ -61,28 +65,28 @@ bool connectToWiFi() {
       beepBuzzer(2, 1000);
       return true;
     }
-    delay(500);
+    delay(500 * (i + 1));
     Serial.print(".");
     blinkLED(1, KEEP_OFF);
   }
   
-  Serial.println("\nFalha na conexão WiFi!");
+  Serial.println("\nFalha na conexão!");
   beepBuzzer(1, 500);
-  
   return false;
 }
 
-void readSensors(float& temperature, float& humidity, float& solutionTemp) {
+void readSensors(float& temperature, float& humidity, float& solutionTemp, bool& levelStatus) {
   temperature = dht.readTemperature();
   humidity = dht.readHumidity();
   tempSensors.requestTemperatures();
   solutionTemp = tempSensors.getTempCByIndex(0);
+  levelStatus = digitalRead(LEVEL_PIN);
   
-  Serial.printf("Temperatura: %.1f°C, Umidade: %.1f%%, Solução: %.1f°C\n", 
-                temperature, humidity, solutionTemp);
+  Serial.printf("Temperatura: %.1f°C, Umidade: %.1f%%, Temp. Solução: %.1f°C, Nível: %s\n", 
+                temperature, humidity, solutionTemp, levelStatus ? "Alto" : "Baixo");
 }
 
-void sendDataToServer(float temperature, float humidity, float solutionTemp) {
+void sendDataToServer(float temperature, float humidity, float tempSolution, bool levelSolution) {
   HTTPClient http;
   http.begin(API_URL.c_str());
   http.addHeader("Content-Type", "application/json");
@@ -97,9 +101,11 @@ void sendDataToServer(float temperature, float humidity, float solutionTemp) {
   if (!isnan(humidity)) {
     addSensorData(sensors, "umdA", humidity);
   }
-  if (solutionTemp != DEVICE_DISCONNECTED_C) {
-    addSensorData(sensors, "tmpS", solutionTemp);
+  if (tempSolution != DEVICE_DISCONNECTED_C) {
+    addSensorData(sensors, "tmpS", tempSolution);
   }
+  // Status do nível (1=alto, 0=baixo)
+  addSensorData(sensors, "levS", levelSolution ? 1.0 : 0.0);
 
   String json;
   serializeJson(doc, json);
@@ -133,6 +139,7 @@ void handleServerResponse(const String& response) {
   checkLimits(doc["tmpA"], doc["tmpA_min"], doc["tmpA_max"], "Temperatura ambiente");
   checkLimits(doc["umdA"], doc["umdA_min"], doc["umdA_max"], "Umidade");
   checkLimits(doc["tmpS"], doc["tmpS_min"], doc["tmpS_max"], "Temperatura da solução");
+  checkLimits(doc["levS"], doc["levS_min"], doc["levS_max"], "Nível da solução");
 }
 
 void checkLimits(float value, float min, float max, const char* sensorName) {
@@ -167,11 +174,16 @@ void setup() {
 
 void loop() {
   static unsigned long lastReadTime = 0;
-  
-  if (millis() - lastReadTime >= SENSOR_READ_INTERVAL && WiFi.status() == WL_CONNECTED) {
-    float temperature, humidity, solutionTemp;
-    readSensors(temperature, humidity, solutionTemp);
-    sendDataToServer(temperature, humidity, solutionTemp);
+
+  if (millis() - lastReadTime >= SENSOR_READ_INTERVAL) {
+    if (WiFi.status() == WL_CONNECTED) {
+      float temperature, humidity, tempSolution;
+      bool levelSolution;
+      readSensors(temperature, humidity, tempSolution, levelSolution);
+      sendDataToServer(temperature, humidity, tempSolution, levelSolution);
+    } else {
+      connectToWiFi();
+    }
     lastReadTime = millis();
   }
 }
