@@ -1,4 +1,7 @@
 #include <WiFi.h>
+#include <ESPmDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
@@ -51,6 +54,45 @@ void setupHardware() {
   tempSensors.begin();
 }
 
+void setupOTA() {
+  // Configuração básica do OTA
+  ArduinoOTA.setHostname("ESP32-PlantIO"); // Nome do dispositivo na rede
+  
+  // Senha para proteção (opcional)
+  ArduinoOTA.setPassword("12345678");
+
+  // Callbacks para status do OTA
+  ArduinoOTA
+    .onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+      else
+        type = "filesystem";
+      Serial.println("Iniciando atualização OTA: " + type);
+      digitalWrite(LED_PIN, LOW); // LED aceso durante atualização
+    })
+    .onEnd([]() {
+      Serial.println("\nAtualização concluída!");
+      digitalWrite(LED_PIN, HIGH);
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("Progresso: %u%%\r", (progress / (total / 100)));
+    })
+    .onError([](ota_error_t error) {
+      Serial.printf("Erro[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Autenticação falhou");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Falha ao iniciar");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Falha na conexão");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Falha na recepção");
+      else if (error == OTA_END_ERROR) Serial.println("Falha ao finalizar");
+      digitalWrite(LED_PIN, HIGH);
+    });
+
+  ArduinoOTA.begin();
+  Serial.println("Atualização OTA (Over-The-Air) via Wi-Fi disponível.");
+}
+
 bool connectToWiFi() {
   Serial.print("\nConectando ao WiFi.");
   WiFi.disconnect(true);
@@ -61,6 +103,10 @@ bool connectToWiFi() {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println(" Conectado!");
       Serial.printf("IP: %s MAC: %s\n", WiFi.localIP().toString().c_str(), WiFi.macAddress().c_str());
+
+      // Inicializa OTA apenas após conexão Wi-Fi
+      setupOTA();
+
       blinkLED(1, KEEP_ON);
       beepBuzzer(2, 1000);
       return true;
@@ -173,6 +219,9 @@ void setup() {
 }
 
 void loop() {
+  // Verifica atualizações OTA
+  ArduinoOTA.handle();
+
   static unsigned long lastReadTime = 0;
 
   if (millis() - lastReadTime >= SENSOR_READ_INTERVAL) {
