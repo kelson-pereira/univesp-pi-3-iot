@@ -59,7 +59,7 @@ void setupOTA() {
   ArduinoOTA.setHostname("ESP32-PlantIO"); // Nome do dispositivo na rede
   
   // Senha para proteção (opcional)
-  ArduinoOTA.setPassword("12345678");
+  ArduinoOTA.setPassword("OTAPASSWD");
 
   // Callbacks para status do OTA
   ArduinoOTA
